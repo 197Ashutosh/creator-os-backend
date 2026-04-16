@@ -19,27 +19,33 @@ import java.util.regex.Pattern;
 
 public class CreatorGrowthOS {
 
-    // ==========================================
-    // MASTER, PUT YOUR KEYS AND PASSWORDS HERE:
-    // ==========================================
+    // =========================================================
+    // MASTER, THESE ARE NOW FULLY DYNAMIC FOR RENDER DEPLOYMENT:
+    // =========================================================
     private static final String GROQ_API_KEY = System.getenv("GROQ_API_KEY");
     private static final String YOUTUBE_API_KEY = System.getenv("YOUTUBE_API_KEY");
     
-    private static final String DB_URL = "jdbc:mysql://localhost:3306/CreatorGrowthOS";
-    private static final String DB_USER = "root";
+    // Database credentials pulled from Render Environment Variables
+    private static final String DB_URL = System.getenv("DB_URL"); 
+    private static final String DB_USER = System.getenv("DB_USER");
     private static final String DB_PASS = System.getenv("DB_PASS"); 
-    // ==========================================
+    // =========================================================
 
     public static void main(String[] args) throws Exception {
         Class.forName("com.mysql.cj.jdbc.Driver");
-        HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
+        
+        // Render expects the app to listen on a specific port provided in the environment
+        String portStr = System.getenv("PORT");
+        int port = (portStr != null) ? Integer.parseInt(portStr) : 8080;
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         
         server.createContext("/api/youtube", new YouTubeHandler());
         server.createContext("/api/recommendation", new RecommendationHandler());
         
         server.setExecutor(null); 
         server.start();
-        System.out.println("Master, the Dynamic Creator Growth OS is running on http://localhost:8080");
+        System.out.println("Master, the Dynamic Creator Growth OS is live on port: " + port);
     }
 
     // --- HANDLER 1: FETCH DYNAMIC YOUTUBE CHANNEL ---
@@ -47,7 +53,10 @@ public class CreatorGrowthOS {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             setCorsHeaders(exchange);
-            if ("OPTIONS".equals(exchange.getRequestMethod())) { exchange.sendResponseHeaders(204, -1); return; }
+            if ("OPTIONS".equals(exchange.getRequestMethod())) { 
+                exchange.sendResponseHeaders(204, -1); 
+                return; 
+            }
 
             if ("POST".equals(exchange.getRequestMethod())) {
                 try {
@@ -58,7 +67,6 @@ public class CreatorGrowthOS {
                     String ytData = fetchYouTubeStats(channelId);
                     registerChannelInDB(channelId);
 
-                    // Forcing UTF-8 to prevent emoji/byte-length crashes
                     byte[] responseBytes = ytData.getBytes(StandardCharsets.UTF_8);
                     exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
                     exchange.sendResponseHeaders(200, responseBytes.length);
@@ -67,13 +75,7 @@ public class CreatorGrowthOS {
                     os.close();
                 } catch (Exception e) {
                     e.printStackTrace();
-                    String errorResp = "{\"error\": \"Java Server Error\"}";
-                    byte[] responseBytes = errorResp.getBytes(StandardCharsets.UTF_8);
-                    exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
-                    exchange.sendResponseHeaders(500, responseBytes.length);
-                    OutputStream os = exchange.getResponseBody();
-                    os.write(responseBytes);
-                    os.close();
+                    sendError(exchange, "Java Server Error: " + e.getMessage());
                 }
             }
         }
@@ -84,7 +86,10 @@ public class CreatorGrowthOS {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             setCorsHeaders(exchange);
-            if ("OPTIONS".equals(exchange.getRequestMethod())) { exchange.sendResponseHeaders(204, -1); return; }
+            if ("OPTIONS".equals(exchange.getRequestMethod())) { 
+                exchange.sendResponseHeaders(204, -1); 
+                return; 
+            }
 
             if ("POST".equals(exchange.getRequestMethod())) {
                 try {
@@ -102,7 +107,6 @@ public class CreatorGrowthOS {
 
                     String jsonResponse = "{\"recommendation\": \"" + aiRecommendation + "\"}";
                     
-                    // Forcing UTF-8 to ensure emojis calculate correctly
                     byte[] responseBytes = jsonResponse.getBytes(StandardCharsets.UTF_8);
                     exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
                     exchange.sendResponseHeaders(200, responseBytes.length);
@@ -110,14 +114,8 @@ public class CreatorGrowthOS {
                     os.write(responseBytes);
                     os.close();
                 } catch (Exception e) {
-                    e.printStackTrace(); // This prints the exact crash reason to PowerShell
-                    String jsonResponse = "{\"recommendation\": \"Server logic crashed: " + e.getMessage().replace("\"", "'") + "\"}";
-                    byte[] responseBytes = jsonResponse.getBytes(StandardCharsets.UTF_8);
-                    exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
-                    exchange.sendResponseHeaders(500, responseBytes.length);
-                    OutputStream os = exchange.getResponseBody();
-                    os.write(responseBytes);
-                    os.close();
+                    e.printStackTrace();
+                    sendError(exchange, "Server logic crashed: " + e.getMessage());
                 }
             }
         }
@@ -125,8 +123,18 @@ public class CreatorGrowthOS {
 
     private static void setCorsHeaders(HttpExchange exchange) {
         exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
-        exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "POST, OPTIONS");
-        exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type");
+        exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "POST, OPTIONS, GET");
+        exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    }
+
+    private static void sendError(HttpExchange exchange, String message) throws IOException {
+        String jsonResponse = "{\"error\": \"" + message.replace("\"", "'") + "\"}";
+        byte[] responseBytes = jsonResponse.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
+        exchange.sendResponseHeaders(500, responseBytes.length);
+        OutputStream os = exchange.getResponseBody();
+        os.write(responseBytes);
+        os.close();
     }
 
     private static String fetchYouTubeStats(String channelId) {
@@ -142,7 +150,9 @@ public class CreatorGrowthOS {
             String videos = extractJsonValue(body, "videoCount");
             
             return "{\"subs\": \"" + subs + "\", \"views\": \"" + totalViews + "\", \"videos\": \"" + videos + "\"}";
-        } catch (Exception e) { return "{\"error\": \"Could not fetch YouTube Data\"}"; }
+        } catch (Exception e) { 
+            return "{\"error\": \"Could not fetch YouTube Data\"}"; 
+        }
     }
 
     private static void registerChannelInDB(String channelId) {
@@ -151,7 +161,7 @@ public class CreatorGrowthOS {
              PreparedStatement pstmt = conn.prepareStatement(query)) {
             pstmt.setString(1, channelId);
             pstmt.executeUpdate();
-        } catch (SQLException e) { System.out.println("JDBC Error: " + e.getMessage()); }
+        } catch (SQLException e) { System.out.println("JDBC Error (Register): " + e.getMessage()); }
     }
 
     private static void saveMetricsAndIncrementStreak(String channelId, String category, int views, double engagement) {
@@ -170,25 +180,26 @@ public class CreatorGrowthOS {
             
             pstmtStreak.setString(1, channelId);
             pstmtStreak.executeUpdate();
-        } catch (SQLException e) { System.out.println("JDBC Error: " + e.getMessage()); }
+        } catch (SQLException e) { System.out.println("JDBC Error (Save/Streak): " + e.getMessage()); }
     }
 
     private static String getAdviceFromGroq(String subs, String category, String views, String engagement) {
         try {
             String prompt = "A YouTube channel with " + subs + " total subscribers just uploaded a " + category + " video. It got " + views + " views and " + engagement + "% engagement. Give a short, 2-sentence actionable advice on what they should do next to grow.";
-            
-            // Clean prompt of any quotes to prevent JSON breakage
             String cleanPrompt = prompt.replace("\"", "'");
             
             String payload = "{\"model\": \"llama-3.1-8b-instant\",\"messages\": [{\"role\": \"user\", \"content\": \"" + cleanPrompt + "\"}],\"temperature\": 0.7}";
 
             HttpClient client = HttpClient.newHttpClient();
             HttpRequest request = HttpRequest.newBuilder().uri(URI.create("https://api.groq.com/openai/v1/chat/completions"))
-                    .header("Authorization", "Bearer " + GROQ_API_KEY).header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + GROQ_API_KEY)
+                    .header("Content-Type", "application/json; charset=utf-8")
                     .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8)).build();
 
             return extractGroqContent(client.send(request, HttpResponse.BodyHandlers.ofString()).body());
-        } catch (Exception e) { return "Server error while contacting AI."; }
+        } catch (Exception e) { 
+            return "Server error while contacting AI."; 
+        }
     }
 
     private static String extractJsonValue(String json, String key) {
@@ -196,13 +207,11 @@ public class CreatorGrowthOS {
         return matcher.find() ? matcher.group(1).trim() : "0";
     }
 
-    // --- REPAIRED PARSER: Extracts text safely character by character ---
     private static String extractGroqContent(String json) {
         try {
             if (json.contains("\"error\"")) {
-                System.out.println("\n--- GROQ API ERROR ---");
-                System.out.println(json);
-                return "Groq API Error: Check PowerShell logs.";
+                System.out.println("\n--- GROQ API ERROR ---\n" + json);
+                return "Groq API Error: Check Render logs.";
             }
 
             String target = "\"content\":\"";
@@ -215,20 +224,14 @@ public class CreatorGrowthOS {
             if (start != -1) {
                 start += target.length();
                 int end = start;
-                
-                // Loops through text to find the exact unescaped ending quote
                 while (end < json.length()) {
-                    if (json.charAt(end) == '"' && json.charAt(end - 1) != '\\') {
-                        break;
-                    }
+                    if (json.charAt(end) == '"' && json.charAt(end - 1) != '\\') break;
                     end++;
                 }
-                
                 String cleanAdvice = json.substring(start, end);
-                // Cleans out any rogue quotes that break JSON
                 return cleanAdvice.replace("\\n", "<br>").replace("\\\"", "'").replace("\"", "'").replace("\n", "");
             }
-            return "Parsing error. Look at your PowerShell window.";
+            return "Parsing error in AI response.";
         } catch (Exception e) {
             return "Server processing error during AI extraction.";
         }

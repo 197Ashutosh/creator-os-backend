@@ -104,7 +104,6 @@ public class CreatorGrowthOS {
 
     private static String fetchYouTubeStats(String channelId) {
         try {
-            // Updated URL to get "snippet" (for name/image) and "statistics"
             String url = "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=" + channelId + "&key=" + YOUTUBE_API_KEY;
             HttpClient client = HttpClient.newHttpClient();
             HttpRequest request = HttpRequest.newBuilder().uri(URI.create(url)).GET().build();
@@ -112,7 +111,7 @@ public class CreatorGrowthOS {
             String body = response.body();
             
             String title = extractJsonValue(body, "title");
-            String thumb = extractJsonValue(body, "url").replace("\\/", "/"); // Fixes thumbnail URL slashes
+            String thumb = extractJsonValue(body, "url").replace("\\/", "/"); 
             String subs = extractJsonValue(body, "subscriberCount");
             String views = extractJsonValue(body, "viewCount");
             String vids = extractJsonValue(body, "videoCount");
@@ -142,7 +141,9 @@ public class CreatorGrowthOS {
 
     private static String getAdviceFromGroq(String subs, String category, String views, String engagement) {
         try {
-            String prompt = "A YouTube channel with " + subs + " total subscribers just uploaded a " + category + " video with " + views + " views. Give 2 short growth sentences.";
+            // NEW: Upgraded AI Prompt for Roadmap and Content Suggestions
+            String prompt = "Act as an expert YouTube strategist. My channel has " + subs + " subscribers. I recently uploaded a " + category + " video that received " + views + " views and an engagement rate of " + engagement + "%. Based on this performance, predict a short roadmap for my channel and suggest 2 specific video topics I should post next to maximize my growth.";
+            
             String payload = "{\"model\": \"llama-3.1-8b-instant\",\"messages\": [{\"role\": \"user\", \"content\": \"" + prompt.replace("\"", "'") + "\"}],\"temperature\": 0.7}";
             HttpClient client = HttpClient.newHttpClient();
             HttpRequest request = HttpRequest.newBuilder().uri(URI.create("https://api.groq.com/openai/v1/chat/completions"))
@@ -161,7 +162,7 @@ public class CreatorGrowthOS {
         try {
             int start = json.indexOf("\"content\":\"") + 11;
             int end = json.indexOf("\"", start);
-            return json.substring(start, end).replace("\\n", " ").replace("\\\"", "'");
+            return json.substring(start, end).replace("\\n", "<br>").replace("\\\"", "'");
         } catch (Exception e) { return "Keep creating!"; }
     }
 }

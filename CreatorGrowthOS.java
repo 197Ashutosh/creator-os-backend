@@ -47,15 +47,17 @@ public class CreatorGrowthOS {
                     InputStream is = exchange.getRequestBody();
                     String requestBody = new String(is.readAllBytes(), StandardCharsets.UTF_8);
                     String channelId = extractJsonValue(requestBody, "channelId");
+                    
                     String ytData = fetchYouTubeStats(channelId);
                     registerChannelInDB(channelId);
+                    
                     byte[] responseBytes = ytData.getBytes(StandardCharsets.UTF_8);
                     exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
                     exchange.sendResponseHeaders(200, responseBytes.length);
                     OutputStream os = exchange.getResponseBody();
                     os.write(responseBytes);
                     os.close();
-                } catch (Exception e) { sendError(exchange, e.getMessage()); }
+                } catch (Exception e) { sendError(exchange, "YT Handler Error: " + e.getMessage()); }
             }
         }
     }
@@ -69,21 +71,32 @@ public class CreatorGrowthOS {
                 try {
                     InputStream is = exchange.getRequestBody();
                     String requestBody = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                    
                     String channelId = extractJsonValue(requestBody, "channelId");
                     String subs = extractJsonValue(requestBody, "subs"); 
                     String category = extractJsonValue(requestBody, "category");
-                    String views = extractJsonValue(requestBody, "views");
-                    String engagement = extractJsonValue(requestBody, "engagement");
-                    saveMetricsAndIncrementStreak(channelId, category, Integer.parseInt(views), Double.parseDouble(engagement));
-                    String aiRecommendation = getAdviceFromGroq(subs, category, views, engagement);
+                    String viewsRaw = extractJsonValue(requestBody, "views");
+                    String engagementRaw = extractJsonValue(requestBody, "engagement");
+                    
+                    // SAFETY 1: Clean numbers to prevent NumberFormatException crashes
+                    int views = 0;
+                    double engagement = 0.0;
+                    try { views = Integer.parseInt(viewsRaw.replaceAll("[^0-9]", "")); } catch (Exception ignore) {}
+                    try { engagement = Double.parseDouble(engagementRaw.replaceAll("[^0-9.]", "")); } catch (Exception ignore) {}
+                    
+                    saveMetricsAndIncrementStreak(channelId, category, views, engagement);
+                    
+                    String aiRecommendation = getAdviceFromGroq(subs, category, String.valueOf(views), String.valueOf(engagement));
+                    
                     String jsonResponse = "{\"recommendation\": \"" + aiRecommendation + "\"}";
                     byte[] responseBytes = jsonResponse.getBytes(StandardCharsets.UTF_8);
+                    
                     exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
                     exchange.sendResponseHeaders(200, responseBytes.length);
                     OutputStream os = exchange.getResponseBody();
                     os.write(responseBytes);
                     os.close();
-                } catch (Exception e) { sendError(exchange, e.getMessage()); }
+                } catch (Exception e) { sendError(exchange, "Recommendation Logic Error: " + e.getMessage()); }
             }
         }
     }
@@ -95,8 +108,11 @@ public class CreatorGrowthOS {
     }
 
     private static void sendError(HttpExchange exchange, String message) throws IOException {
-        String jsonResponse = "{\"error\": \"" + message.replace("\"", "'") + "\"}";
+        // SAFETY 2: Ensure error messages don't break JSON format
+        String safeMsg = message == null ? "Unknown Error" : message.replace("\"", "'").replaceAll("[\\x00-\\x1F]", " ");
+        String jsonResponse = "{\"error\": \"" + safeMsg + "\"}";
         byte[] responseBytes = jsonResponse.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
         exchange.sendResponseHeaders(500, responseBytes.length);
         exchange.getResponseBody().write(responseBytes);
         exchange.getResponseBody().close();
@@ -104,7 +120,6 @@ public class CreatorGrowthOS {
 
     private static String fetchYouTubeStats(String channelId) {
         try {
-            // Updated URL to get "snippet" (for name/image) and "statistics"
             String url = "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=" + channelId + "&key=" + YOUTUBE_API_KEY;
             HttpClient client = HttpClient.newHttpClient();
             HttpRequest request = HttpRequest.newBuilder().uri(URI.create(url)).GET().build();
@@ -112,7 +127,7 @@ public class CreatorGrowthOS {
             String body = response.body();
             
             String title = extractJsonValue(body, "title");
-            String thumb = extractJsonValue(body, "url").replace("\\/", "/"); // Fixes thumbnail URL slashes
+            String thumb = extractJsonValue(body, "url").replace("\\/", "/"); 
             String subs = extractJsonValue(body, "subscriberCount");
             String views = extractJsonValue(body, "viewCount");
             String vids = extractJsonValue(body, "videoCount");
@@ -127,7 +142,7 @@ public class CreatorGrowthOS {
              PreparedStatement pstmt = conn.prepareStatement(query)) {
             pstmt.setString(1, channelId);
             pstmt.executeUpdate();
-        } catch (SQLException e) { }
+        } catch (SQLException e) { } // Intentionally ignored so DB failure doesn't crash the AI response
     }
 
     private static void saveMetricsAndIncrementStreak(String channelId, String category, int views, double engagement) {
@@ -142,28 +157,64 @@ public class CreatorGrowthOS {
 
     private static String getAdviceFromGroq(String subs, String category, String views, String engagement) {
         try {
+            String prompt = "Act as an expert YouTube strategist. My channel has " + subs + " subscribers. I recently uploaded a " + category + " video that received " + views + " views and an engagement rate of " + engagement + "%. Based on this performance, predict a short roadmap for my channel and suggest 2 specific video topics I should post next to maximize my growth.";
             
-            String prompt = "Act as an expert YouTube strategist. My channel has " + subs + " subscribers. I uploaded a " + category + " video that got " + views + " views and " + engagement + "% engagement. Predict a short roadmap and suggest 2 specific video topics. CRITICAL RULE: Provide the answer in one single, continuous paragraph. Do not use any bullet points, line breaks, or double quotes.";
+            String cleanPrompt = prompt.replace("\"", "'").replaceAll("[\\n\\r]", " ");
+            String payload = "{\"model\": \"llama-3.1-8b-instant\",\"messages\": [{\"role\": \"user\", \"content\": \"" + cleanPrompt + "\"}],\"temperature\": 0.7}";
             
-            String payload = "{\"model\": \"llama-3.1-8b-instant\",\"messages\": [{\"role\": \"user\", \"content\": \"" + prompt.replace("\"", "'") + "\"}],\"temperature\": 0.7}";
             HttpClient client = HttpClient.newHttpClient();
             HttpRequest request = HttpRequest.newBuilder().uri(URI.create("https://api.groq.com/openai/v1/chat/completions"))
                     .header("Authorization", "Bearer " + GROQ_API_KEY).header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8)).build();
+            
             return extractGroqContent(client.send(request, HttpResponse.BodyHandlers.ofString()).body());
-        } catch (Exception e) { return "Stay consistent and monitor analytics."; }
+        } catch (Exception e) { return "Stay consistent and monitor analytics. (Error generating AI roadmap)"; }
     }
 
     private static String extractJsonValue(String json, String key) {
         Matcher m = Pattern.compile("\"" + key + "\"\\s*:\\s*\"?([^\"},]+)\"?").matcher(json);
-        return m.find() ? m.group(1).trim() : "N/A";
+        return m.find() ? m.group(1).trim() : "0";
     }
 
+    // SAFETY 3: Bulletproof JSON Extractor for complex AI text streams
     private static String extractGroqContent(String json) {
         try {
-            int start = json.indexOf("\"content\":\"") + 11;
-            int end = json.indexOf("\"", start);
-            return json.substring(start, end).replace("\\n", " ").replace("\\\"", "'");
-        } catch (Exception e) { return "Keep creating!"; }
+            if (json == null || json.contains("\"error\"")) return "Groq API error. Check Render Logs.";
+            
+            String marker = "\"content\":";
+            int idx = json.indexOf(marker);
+            if (idx == -1) return "Could not parse AI response structure.";
+            
+            idx += marker.length();
+            while (idx < json.length() && Character.isWhitespace(json.charAt(idx))) idx++;
+            
+            if (idx < json.length() && json.charAt(idx) == '"') {
+                idx++; 
+                StringBuilder sb = new StringBuilder();
+                while (idx < json.length()) {
+                    char c = json.charAt(idx);
+                    if (c == '\\') {
+                        idx++;
+                        if (idx < json.length()) {
+                            char next = json.charAt(idx);
+                            if (next == 'n') sb.append("<br><br>");
+                            else if (next == '"') sb.append("'");
+                            else if (next == 't') sb.append(" ");
+                            else sb.append(next);
+                        }
+                    } else if (c == '"') {
+                        break; 
+                    } else {
+                        sb.append(c);
+                    }
+                    idx++;
+                }
+                String res = sb.toString();
+                res = res.replace("\"", "'"); 
+                res = res.replaceAll("[\\x00-\\x1F]", ""); // Absolute scrub of rogue control characters
+                return res;
+            }
+            return "Unexpected AI output format.";
+        } catch (Exception e) { return "Extraction engine error."; }
     }
 }
